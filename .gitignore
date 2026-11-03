@@ -3,3 +3,13 @@ build*/
 legacy/
 .DS_Store
 
+
+# --- rp2350-one fork: never commit keys or build products ---
+*.pem
+*.key
+*.der
+keys/
+secrets/
+build-rp2350-one/
+.deps/
+*.otp.json

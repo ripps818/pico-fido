@@ -34,7 +34,7 @@ any slot. To keep PicoKey App working and to be able to run official signed buil
 | bootkey0 | your primary key | your builds |
 | bootkey1 | maintainer's hash | official builds; PicoKey App reports "secure boot enabled" |
 | bootkey2 | your backup key (optional) | recovery if the primary key is lost or compromised |
-| bootkey3 | spare | |
+| bootkey3 | CI signing key (GitHub secret `SIGNING_KEY_PEM`) | lets you flash the signed GitHub release |
 
 Trade-off: whoever holds the maintainer's private key can boot code that reads your MKEK. You can
 revoke slot 1 later by setting its `KEY_INVALID` bit (also irreversible; PicoKey App will then show
@@ -42,6 +42,14 @@ secure boot as disabled).
 
 RP2350 has four boot-key slots (`BOOT_FLAGS1.KEY_VALID` is 4 bits). The firmware loops over six,
 but only 0-3 exist.
+
+**CI key (slot 3).** The release workflow signs with a dedicated key stored only as the repo secret
+`SIGNING_KEY_PEM`; no copy exists elsewhere, and it cannot be read back from GitHub. To enroll it,
+build a key-only JSON the same way as in step 4 from any CI-signed build's `pico_fido.otp.json`
+(use `bootkey3`), then include it in step 5 and add `0x8` to the `KEY_VALID` mask in step 6
+(`0xF` for all four slots). If you would rather not trust CI at all, skip slot 3 and sign locally.
+Because slot 3 is used, the step 8 hardening should not invalidate it. Rotating the secret later means
+a new key that needs a new slot, so only do that before burning, or accept losing slot 3.
 
 ## 2. Generate keys (you do this, offline)
 

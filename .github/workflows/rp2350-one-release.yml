@@ -1,0 +1,115 @@
+name: "RP2350-One build and release"
+
+# Builds the Waveshare RP2350-One image from this branch. A release is created only for the
+# upstream tag this branch is based on (tags are synced from upstream; this workflow never
+# creates or moves tags) and only if that tag has no release yet.
+# Optional secret SIGNING_KEY_PEM: secp256k1 PEM private key for `picotool seal`.
+# Without it the image is built UNSIGNED and the release says so.
+
+on:
+  push:
+    branches: [rp2350-one]
+    paths-ignore: ['**.md']
+  pull_request:
+    branches: [rp2350-one]
+  workflow_dispatch:
+    inputs:
+      replace_assets:
+        description: "Re-upload assets to an existing release for the base tag"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  ARM_GNU_VERSION: 14.3.rel1
+  ARM_GNU_SHA256: 8f6903f8ceb084d9227b9ef991490413014d991874a1e34074443c2a72b14dbd
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create releases; the job only does so on push/dispatch to rp2350-one
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # firmware embeds `git rev-list --count HEAD`
+          submodules: recursive
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cmake ninja-build git openssl
+          F=arm-gnu-toolchain-$ARM_GNU_VERSION-x86_64-arm-none-eabi.tar.xz
+          curl -sSfLO "https://developer.arm.com/-/media/Files/downloads/gnu/$ARM_GNU_VERSION/binrel/$F"
+          echo "$ARM_GNU_SHA256  $F" | sha256sum -c -
+          sudo tar -xf "$F" -C /opt
+          echo "/opt/arm-gnu-toolchain-$ARM_GNU_VERSION-x86_64-arm-none-eabi/bin" >> "$GITHUB_PATH"
+
+      - name: Write signing key (if configured)
+        id: key
+        env:
+          SIGNING_KEY_PEM: ${{ secrets.SIGNING_KEY_PEM }}
+        run: |
+          if [ -n "$SIGNING_KEY_PEM" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+            umask 077
+            printf '%s\n' "$SIGNING_KEY_PEM" > "$RUNNER_TEMP/signing.pem"
+            echo "path=$RUNNER_TEMP/signing.pem" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing key (or pull_request run): building UNSIGNED image"
+          fi
+
+      - name: Build
+        env:
+          OUT_DIR: ${{ github.workspace }}/out
+          SIGNING_KEY: ${{ steps.key.outputs.path }}
+        run: ./build-rp2350-one.sh
+
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/signing.pem"
+
+      - name: Package
+        id: pkg
+        run: |
+          cd out
+          BASE_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          SIGNED="$(sed -n 's/^signed: *//p' build-info.txt)"
+          SUFFIX=$([ "$SIGNED" = yes ] && echo signed || echo unsigned)
+          mv pico_fido.uf2 "pico_fido_rp2350-one-${BASE_TAG:-untagged}-$SUFFIX.uf2"
+          sha256sum *.uf2 > SHA256SUMS
+          echo "base_tag=$BASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "signed=$SIGNED" >> "$GITHUB_OUTPUT"
+          echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pico_fido_rp2350-one-${{ steps.pkg.outputs.suffix }}
+          path: |
+            out/*.uf2
+            out/build-info.txt
+            out/SHA256SUMS
+
+      - name: Release for the upstream base tag
+        if: github.event_name != 'pull_request' && steps.pkg.outputs.base_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.pkg.outputs.base_tag }}
+          SIGNED: ${{ steps.pkg.outputs.signed }}
+          REPLACE: ${{ inputs.replace_assets }}
+        run: |
+          git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "tag $TAG missing"; exit 1; }
+          FILES=(out/*.uf2 out/build-info.txt out/SHA256SUMS)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$REPLACE" = true ]; then
+              gh release upload "$TAG" "${FILES[@]}" --clobber
+            else
+              echo "Release $TAG already exists; skipping (re-run with replace_assets to re-upload)."
+            fi
+          else
+            NOTE="Waveshare RP2350-One build of upstream pico-fido $TAG (fork commit ${GITHUB_SHA::12}). Signed: $SIGNED."
+            [ "$SIGNED" = yes ] || NOTE="$NOTE UNSIGNED: will not boot on a device with secure boot enabled."
+            gh release create "$TAG" "${FILES[@]}" --verify-tag --title "$TAG (RP2350-One)" --notes "$NOTE"
+          fi

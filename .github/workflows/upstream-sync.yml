@@ -1,0 +1,86 @@
+name: "Check upstream for new tag"
+
+# Daily: if polhenarejos/pico-fido has a newer version tag than this branch contains,
+# sync the tag into this fork and open a PR (in this fork only) merging it into rp2350-one.
+# Never opens anything against upstream and never creates tags of our own.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM: https://github.com/polhenarejos/pico-fido
+  BRANCH: rp2350-one
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BRANCH }}
+          fetch-depth: 0
+          submodules: false
+
+      - name: Find newest upstream tag
+        id: up
+        run: |
+          git remote add upstream "$UPSTREAM"
+          git fetch --no-tags upstream main
+          TAG="$(git ls-remote --tags --refs "$UPSTREAM" 'v*' | sed 's|.*refs/tags/||' | sort -V | tail -1)"
+          [ -n "$TAG" ] || { echo "no upstream tags found"; exit 1; }
+          git fetch --no-tags upstream "refs/tags/$TAG:refs/tags/$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "refs/tags/$TAG" HEAD; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"; echo "$TAG already merged"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if a sync branch or PR already exists
+        id: exists
+        if: steps.up.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.up.outputs.tag }}
+        run: |
+          if git ls-remote --exit-code --heads origin "sync/$TAG" >/dev/null 2>&1 \
+             || [ -n "$(gh pr list --head "sync/$TAG" --state all --json number -q '.[0].number')" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"; echo "sync/$TAG already handled"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge tag and open PR
+        if: steps.up.outputs.needed == 'true' && steps.exists.outputs.found == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.up.outputs.tag }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git push origin "refs/tags/$TAG"      # mirror the upstream tag into the fork (no new tag names)
+          git checkout -b "sync/$TAG"
+          if git merge --no-ff --no-edit "refs/tags/$TAG" -m "Merge upstream $TAG"; then
+            git push -u origin "sync/$TAG"
+            gh pr create --base "$BRANCH" --head "sync/$TAG" \
+              --title "Sync upstream $TAG" \
+              --body "Automated merge of upstream \`$TAG\` (${UPSTREAM}) into \`$BRANCH\`.
+
+          Before merging:
+          - check \`pico-keys-sdk/config/rp2350/pt.json\` (flash/credential layout) and the pico-sdk tag the upstream CI uses
+          - run \`./build-rp2350-one.sh\` and compare \`build-info.txt\` (pt.json hash)
+          - see \`UPSTREAM_NOTES.md\` and \`RP2350-ONE.md\`
+
+          Builds on PRs created by the Actions token do not start automatically; push an empty commit or close/reopen to trigger them. Merging this PR builds the release for \`$TAG\`."
+          else
+            git merge --abort
+            gh issue create --title "Upstream $TAG does not merge cleanly into $BRANCH" \
+              --body "Automatic merge of \`$TAG\` into \`$BRANCH\` conflicted. Merge manually: \`git fetch upstream --tags && git merge $TAG\`."
+          fi

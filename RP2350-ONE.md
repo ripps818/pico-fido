@@ -8,7 +8,7 @@ source is modified, so `git merge upstream/main` stays conflict-free.
 ```sh
 export PATH=/data/tools/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin:$PATH   # arm-none-eabi-gcc 14.x
 export PICO_SDK_PATH=/data/repos/raspberrypi/pico-sdk                                 # tag 2.3.1
-SIGNING_KEY=/path/to/primary.pem ./build-rp2350-one.sh    # signed
+SIGNING_KEY=/path/to/local.pem ./build-rp2350-one.sh    # signed
 ./build-rp2350-one.sh                                     # unsigned, prints a warning
 ```
 

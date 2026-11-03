@@ -31,10 +31,16 @@ any slot. To keep PicoKey App working and to be able to run official signed buil
 
 | Slot | Contents | Purpose |
 |---|---|---|
-| bootkey0 | your primary key | your builds |
+| bootkey0 | the key that signs your images: the CI key (GitHub secret `SIGNING_KEY_PEM`) for releases, **or** your local key if you build and sign locally | your builds |
 | bootkey1 | maintainer's hash | official builds; PicoKey App reports "secure boot enabled" |
-| bootkey2 | your backup key (optional) | recovery if the primary key is lost or compromised |
-| bootkey3 | CI signing key (GitHub secret `SIGNING_KEY_PEM`) | lets you flash the signed GitHub release |
+| bootkey2, bootkey3 | empty, left spare | add a key later (for example a second signer) |
+
+Only slot 0 is "yours": pick one signer and enroll it. If you sign in CI, slot 0 is the CI key; if you
+build locally, slot 0 is the local key. A third key is only worth enrolling if you want to use both.
+There is no offline backup key. If slot 0's key is lost, the device keeps running the image it has,
+and you can still flash maintainer-signed images (slot 1), but you cannot sign your own firmware again
+without enrolling a spare slot. That is a trade-off to accept, or to avoid by enrolling a backup key
+in slot 2 before step 7.
 
 Trade-off: whoever holds the maintainer's private key can boot code that reads your MKEK. You can
 revoke slot 1 later by setting its `KEY_INVALID` bit (also irreversible; PicoKey App will then show
@@ -43,19 +49,18 @@ secure boot as disabled).
 RP2350 has four boot-key slots (`BOOT_FLAGS1.KEY_VALID` is 4 bits). The firmware loops over six,
 but only 0-3 exist.
 
-**CI key (slot 3).** The release workflow signs with a dedicated key stored only as the repo secret
-`SIGNING_KEY_PEM`; no copy exists elsewhere, and it cannot be read back from GitHub. To enroll it,
-build a key-only JSON the same way as in step 4 from any CI-signed build's `pico_fido.otp.json`
-(use `bootkey3`), then include it in step 5 and add `0x8` to the `KEY_VALID` mask in step 6
-(`0xF` for all four slots). If you would rather not trust CI at all, skip slot 3 and sign locally.
-Because slot 3 is used, the step 8 hardening should not invalidate it. Rotating the secret later means
-a new key that needs a new slot, so only do that before burning, or accept losing slot 3.
+**CI key as slot 0.** The release workflow signs with a dedicated key stored only as the repo secret
+`SIGNING_KEY_PEM`; no copy exists elsewhere and it cannot be read back from GitHub. Its public
+boot-key hash is in `slot0-ci-key.json` (generated when the key was created; the file is not in git).
+It can also be derived from any CI-signed build's `pico_fido.otp.json` (step 4). To sign locally
+instead, use your own key as slot 0 and ignore the CI key. A key already burned into slot 0 cannot be
+swapped, so decide first.
 
 ## 2. Generate keys (you do this, offline)
 
 ```sh
-openssl ecparam -name secp256k1 -genkey -noout -out primary.pem
-openssl ecparam -name secp256k1 -genkey -noout -out backup.pem
+openssl ecparam -name secp256k1 -genkey -noout -out local.pem      # only if you sign locally
+# optional spare signer for slot 2: openssl ecparam -name secp256k1 -genkey -noout -out backup.pem
 chmod 600 *.pem
 ```
 
@@ -80,8 +85,8 @@ Put the stick in BOOTSEL (hold BOOT while plugging in).
 
 ## 4. Order of operations
 
-1. **Build signed** with your primary key and keep the output:
-   `SIGNING_KEY=/safe/place/primary.pem ./build-rp2350-one.sh`
+1. **Get a signed build** from the key you are enrolling in slot 0: either the CI-signed release asset,
+   or a local build, `SIGNING_KEY=/safe/place/local.pem ./build-rp2350-one.sh`. Keep `pico_fido.otp.json`.
 2. **Flash and test with secure boot still off.** Copy `pico_fido.uf2` to the BOOTSEL drive.
    Confirm it enumerates, the LED works, registration works with a BOOT press, and that the first
    boot wrote the MKEK (`picotool otp get 0xE90` is *not* readable by design; judge by it working).
@@ -98,26 +103,26 @@ import json
 def keyonly(src, slot, dst):
     d = json.load(open(src))
     json.dump({"bootkey%d" % slot: d["bootkey0"]}, open(dst, "w"), indent=4)
-keyonly("pico_fido.otp.json", 0, "slot0-primary.json")
+keyonly("pico_fido.otp.json", 0, "slot0-signer.json")   # pico_fido.otp.json from the CI-signed or locally signed build you enroll
 keyonly("pico-keys-sdk/config/rp2350/secure_boot.json", 1, "slot1-maintainer.json")
 EOF
 ```
 
-   For the backup key, build or seal once with `SIGNING_KEY=backup.pem` (e.g. into a different
-   `OUT_DIR`) and run `keyonly(..., 2, "slot2-backup.json")` on its `pico_fido.otp.json`.
+   Optional spare signer: build once with `SIGNING_KEY=backup.pem` into a different `OUT_DIR` and run
+   `keyonly(..., 2, "slot2-backup.json")` on its `pico_fido.otp.json`.
    Check that `slot1-maintainer.json`'s bytes spell `E1D16BA7...C871`.
 5. **Load the key hashes (IRREVERSIBLE per slot):**
 
    ```sh
-   picotool otp load slot0-primary.json
+   picotool otp load slot0-signer.json
    picotool otp load slot1-maintainer.json
    picotool otp load slot2-backup.json      # optional
    ```
 
    `otp load` takes JSON and writes the key rows with ECC. Verify each with `picotool otp list -p`
    or `picotool otp get BOOTKEY0_0` (same for 1 and 2) and compare against the hashes.
-6. **Mark the slots valid (IRREVERSIBLE):** with all of slots 0, 1 and 2 enrolled,
-   `picotool otp set BOOT_FLAGS1.KEY_VALID 0x7`. (Slots 0+1 only: `0x3`.) This field is stored with
+6. **Mark the slots valid (IRREVERSIBLE):** with slots 0 and 1 enrolled,
+   `picotool otp set BOOT_FLAGS1.KEY_VALID 0x3`. (Add `0x4` if you also enrolled slot 2, giving `0x7`.) This field is stored with
    3 redundant raw copies; picotool handles that. Read it back with
    `picotool otp get BOOT_FLAGS1`.
 7. **Enable secure boot (IRREVERSIBLE):** `picotool otp set CRIT1.SECURE_BOOT_ENABLE 1`.
@@ -126,7 +131,8 @@ EOF
    by an unenrolled key, will not boot (the chip stays in BOOTSEL, where you can still load a signed
    UF2).
 8. **Optional hardening (IRREVERSIBLE), only after steps 1-7 are verified:**
-   - Retire unused slots: `picotool otp set BOOT_FLAGS1.KEY_INVALID 0x8` (slot 3 here, `0xC` for 2 and 3).
+   - Retire unused slots: `picotool otp set BOOT_FLAGS1.KEY_INVALID 0xC` (slots 2 and 3). Skip this if you might want to add a key
+     later: an invalidated slot can never be used.
      Do **not** invalidate slots you enrolled.
    - Disable debug access: `picotool otp set CRIT1.DEBUG_DISABLE 1`.
    - Glitch detector: `picotool otp set CRIT1.GLITCH_DETECTOR_ENABLE 1` and

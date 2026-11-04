@@ -146,8 +146,18 @@ EOF
    (should be rejected). Confirm PicoKey App reports secure boot enabled.
 
 `CRIT1.*` and `BOOT_FLAGS1.*` field names come from pico-sdk 2.3.1 `otp_data.h`; picotool derives its
-selector names from that file. If a name is rejected, run `picotool otp list -z <fragment>`
-(fuzzy) to find the current spelling before writing anything.
+selector names from that file. If a name is rejected, find the current spelling with `picotool otp list -f <name>` or
+`picotool otp get -z -n <fragment>` (fuzzy) before writing anything. These names were confirmed
+against picotool 2.3.1 on a real RP2350 (BOOT_FLAGS1, CRIT1, BOOTKEY0_0, BOOTKEY1_0).
+
+picotool's own field notes for `BOOT_FLAGS1.KEY_VALID` and `CRIT1.SECURE_BOOT_ENABLE`:
+- Verify each key after programming and **before** setting `KEY_VALID`. A boot key with uncorrectable
+  ECC faults makes the device unbootable once secure boot is enabled. `picotool otp load` verifies as it
+  writes, and `picotool otp get -z -n BOOTKEY0` reads all 16 ECC rows back.
+- Do not enable secure boot without a valid key installed.
+- Enabling secure boot permanently disables the RISC-V cores (pico-fido runs on ARM).
+- Raspberry Pi recommends marking unused key slots `KEY_INVALID` so spurious keys cannot be installed
+  later. The trade-off is that you can never add a key to a slot you invalidated.
 
 ## 5. Things not to do
 

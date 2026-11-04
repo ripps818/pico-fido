@@ -67,6 +67,27 @@ TREE_COMMIT="$(git rev-parse HEAD)"
 DIRTY=clean
 [ -n "$(git status --porcelain --untracked-files=no)" ] && DIRTY=DIRTY
 
+# ---- patches to the pico-keys-sdk submodule -----------------------------------
+# Applied for the build only and reverted on exit, so the submodule stays at its recorded commit.
+PATCHES=()
+APPLIED=()
+for P in "$REPO_DIR"/patches/pico-keys-sdk-*.patch; do
+    [ -e "$P" ] || continue
+    PATCHES+=("$P")
+    if git -C pico-keys-sdk apply --check "$P" 2>/dev/null; then
+        git -C pico-keys-sdk apply "$P"
+        APPLIED+=("$P")
+    elif git -C pico-keys-sdk apply --check -R "$P" 2>/dev/null; then
+        echo "patch already applied: $(basename "$P")"
+    else
+        die "patch $(basename "$P") does not apply to pico-keys-sdk $(git -C pico-keys-sdk rev-parse --short HEAD); rebase it"
+    fi
+done
+revert_patches() {
+    for ((i=${#APPLIED[@]}-1; i>=0; i--)); do git -C "$REPO_DIR/pico-keys-sdk" apply -R "${APPLIED[$i]}" || true; done
+}
+trap revert_patches EXIT
+
 # ---- signing key ----------------------------------------------------------
 CMAKE_SIGN=()
 SIGNED=no
@@ -131,6 +152,7 @@ PICOTOOL="$(find "$PICOTOOL_FETCH_FROM_GIT_PATH" -type f -name picotool -perm -u
     echo "ninja:             $(ninja --version)"
     echo "cmake options:     ${CMAKE_ARGS[*]}"
     echo "signed:            $SIGNED"
+    for P in "${PATCHES[@]}"; do echo "patch:             $(basename "$P") sha256 $(sha256sum "$P" | cut -d' ' -f1)"; done
     echo "pt.json sha256:    $(sha256sum pico-keys-sdk/config/rp2350/pt.json | cut -d' ' -f1)"
     echo "pico_fido.uf2 sha256: $(sha256sum "$OUT_DIR/pico_fido.uf2" | cut -d' ' -f1)"
     echo "pico_fido.elf sha256: $(sha256sum "$OUT_DIR/pico_fido.elf" | cut -d' ' -f1)"

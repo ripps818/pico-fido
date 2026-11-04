@@ -1,7 +1,7 @@
 # pico-fido on the Waveshare RP2350-One
 
-This fork adds only files (`build-rp2350-one.sh`, `.gitignore` entries and these notes). No upstream
-source is modified, so `git merge upstream/main` stays conflict-free.
+This fork adds only files (`build-rp2350-one.sh`, `.gitignore` entries, CI workflows, `patches/` and
+these notes). No upstream source is modified, so `git merge upstream/main` stays conflict-free.
 
 ## Build
 
@@ -32,6 +32,16 @@ Credential storage is not set by a board define or cmake option. It comes from
 `pico-keys-sdk/config/rp2350/pt.json` (data partition `0x102000`-`0x400000`, clamped to the detected
 flash size). `build-info.txt` records the hash of that file; if it changes after a merge, the data
 location may have moved, so read the upstream change before flashing over a device you care about.
+
+## Patches
+
+`patches/pico-keys-sdk-*.patch` are applied to the pico-keys-sdk submodule by `build-rp2350-one.sh`
+for the duration of the build and reverted afterwards (the submodule commit stays unchanged). The
+script fails if a patch no longer applies, and `build-info.txt` records each patch's sha256.
+
+| Patch | Why |
+|---|---|
+| `pico-keys-sdk-no-webusb-landing-page.patch` | Sets the WebUSB `iLandingPage` index to 0, so Chromium-based browsers stop offering `picokeys.com` every time the stick is plugged in. WebUSB itself is unchanged, so other WebUSB tools still work. |
 
 ## Button and LED
 

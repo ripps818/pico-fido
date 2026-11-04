@@ -86,6 +86,27 @@ the stick. If picotool runs in a distrobox/container, the rules still belong on 
 sees the host's `/dev` and its permissions, and `sudo` inside a rootless container does not help.
 Put the stick in BOOTSEL (hold BOOT while plugging in).
 
+## 3b. Known risk: firmware may fall back to BOOTSEL under secure boot (unresolved upstream)
+
+Upstream issue [pico-fido #211](https://github.com/polhenarejos/pico-fido/issues/211): a user signed
+pico-fido with their own key, enrolled it in slot 0 and enabled secure boot (`picotool otp load
+pico_fido.otp.json`). The image booted once, then every boot dropped straight back to BOOTSEL. The
+maintainer replied that the chip is not bricked and that "PicoKeys use index 0, so you must use
+indexes 1-5". The issue was closed with no root cause identified.
+
+Things that could plausibly produce that symptom, none of them verified here:
+- `low_flash.c` calls `reset_usb_boot()` if `rom_load_partition_table()` fails. Our build embeds the
+  partition table with `picotool partition create` **without `--sign`** (pico-sdk's
+  `tools/CMakeLists.txt`), so the table is hashed but not signed. Whether the boot ROM accepts that
+  once secure boot is enabled is unconfirmed.
+- Something specific to slot 0 (per the maintainer's remark).
+
+Because enabling secure boot is irreversible, **test the whole sequence on a spare RP2350 board
+first** (same flash size, ideally another RP2350-One): flash the signed UF2, run steps 4-7, power
+cycle, and confirm FIDO still enumerates and registers. Only then repeat on the real stick. If it
+fails, the board still enters BOOTSEL and can be recovered by flashing a working signed image, but
+it would be unusable as a FIDO key until one is found.
+
 ## 4. Order of operations
 
 1. **Get a signed build** from the key you are enrolling in slot 0: either the CI-signed release asset,

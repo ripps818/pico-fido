@@ -80,7 +80,10 @@ cmake --build picotool/build
 sudo install picotool/build/picotool /usr/local/bin/   # or run it in place
 ```
 
-Run it as root or install the udev rules from `picotool/udev/99-picotool.rules`.
+Device access needs the udev rules from `picotool/udev/60-picotool.rules`, installed **on the host**
+(`/etc/udev/rules.d/`) followed by `sudo udevadm control --reload && sudo udevadm trigger`, then replug
+the stick. If picotool runs in a distrobox/container, the rules still belong on the host: the container
+sees the host's `/dev` and its permissions, and `sudo` inside a rootless container does not help.
 Put the stick in BOOTSEL (hold BOOT while plugging in).
 
 ## 4. Order of operations

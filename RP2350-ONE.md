@@ -26,6 +26,7 @@ into `.deps/picotool` for sealing and `picotool info`. Output goes to
 | `PICO_PLATFORM` | `rp2350-arm-s` | |
 | pico-sdk | tag `2.3.1` | The version upstream CI uses; the script refuses anything else unless `ALLOW_SDK_MISMATCH=1` |
 | `FORCE_BUTTON_WAIT` | `1` | User presence requires a BOOT press; `FORCE_BUTTON_WAIT=0` for upstream behaviour |
+| `ENABLE_EDDSA` | `1` | Advertises Ed25519 (COSE -8) so `ssh-keygen -t ed25519-sk` works. Upstream default is off; `ENABLE_EDDSA=0` restores it. Switches mbedtls to `polhenarejos/mbedtls` tag `v3.6.7-eddsa` (commit pinned in the script) |
 | submodule | must match the recorded gitlink | |
 
 Credential storage is not set by a board define or cmake option. It comes from
@@ -42,6 +43,24 @@ script fails if a patch no longer applies, and `build-info.txt` records each pat
 | Patch | Why |
 |---|---|
 | `pico-keys-sdk-no-webusb-landing-page.patch` | Sets the WebUSB `iLandingPage` index to 0, so Chromium-based browsers stop offering `picokeys.com` every time the stick is plugged in. WebUSB itself is unchanged, so other WebUSB tools still work. |
+
+## Ed25519 (`ENABLE_EDDSA`)
+
+- **Why it was missing:** `pico-keys-sdk/cmake/deps.cmake` has `option(ENABLE_EDDSA ... OFF)`. Only with it on
+  does the build define `MBEDTLS_EDDSA_C`, which `src/fido/cbor_get_info.c` requires to list `FIDO2_ALG_EDDSA`
+  (-8). Upstream's own `build_pico_fido.sh` and CI never pass it, so official releases lack it too. It is not
+  RP2350-specific; it simply needs the EdDSA mbedtls fork.
+- **getInfo algorithms** without it: ES256 (-7), ES384 (-35), ES512 (-36, which libfido2 prints as "unknown")
+  and, only if the PHY secp256k1 flag is set, ES256K (-47). With it, EdDSA (-8) is added.
+- **Existing credentials:** unaffected. The partition layout (`pt.json` hash) and board settings are identical;
+  the only differences are the mbedtls source, the option, and about 19 KB more firmware (530 KB of 1 MiB).
+  `EDDSA` conditionals touch only curve conversion, makeCredential/getAssertion signing and getInfo, not any
+  stored file format. A bit-for-bit test of stock mbedtls 3.6.7 against the fork (HKDF key derivation chain,
+  `ecp_read_key`, `keypair_calc_public`, public-point encoding and ChaCha20-Poly1305 as used for credential
+  IDs, 1600 derived keys across P-256/P-384/P-521/secp256k1) gave identical output.
+- **Downgrading** to a non-EdDSA build leaves Ed25519 credentials stored but unusable (the firmware rejects the
+  algorithm); ES256 credentials keep working.
+- `build-info.txt` records the mbedtls and tinycbor commits and whether EdDSA is enabled.
 
 ## Button and LED
 

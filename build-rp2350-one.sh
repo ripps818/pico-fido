@@ -11,6 +11,8 @@
 #                        (default: cloned to .deps/pico-sdk)
 #   ALLOW_SDK_MISMATCH=1 build against a different SDK checkout anyway
 #   FORCE_BUTTON_WAIT    1 (default) requires a BOOT press for user presence, 0 = upstream default
+#   ENABLE_EDDSA         1 (default) adds Ed25519/Ed448 (needed for ed25519-sk SSH keys); 0 = upstream default
+#                        (uses the polhenarejos/mbedtls v3.6.7-eddsa fork; commit pinned below)
 #   OUT_DIR              output directory (default /data/out/pico-fido-rp2350-one)
 #   PICOTOOL_FETCH_FROM_GIT_PATH
 #                        where the SDK caches the picotool it builds (default .deps/picotool)
@@ -28,6 +30,10 @@ PICO_BOARD=waveshare_rp2350_one      # RP2350A, 4 MiB, WS2812 on GPIO16 (from pi
 PICO_PLATFORM=rp2350-arm-s
 PICO_SDK_TAG=2.3.1
 FORCE_BUTTON_WAIT="${FORCE_BUTTON_WAIT:-1}"
+ENABLE_EDDSA="${ENABLE_EDDSA:-1}"
+# mbedtls commits that pico-keys-sdk/cmake/deps.cmake fetches by tag; tags can move, so verify the commit.
+MBEDTLS_STD_COMMIT=068ff080b369adfac81509f9b57b2afabaf82dc5      # Mbed-TLS/mbedtls v3.6.7
+MBEDTLS_EDDSA_COMMIT=fc39404125e93ee00e6758605e6c6f2c8db440f1    # polhenarejos/mbedtls v3.6.7-eddsa
 OUT_DIR="${OUT_DIR:-/data/out/pico-fido-rp2350-one}"
 BUILD_DIR="$REPO_DIR/build-rp2350-one"
 BUILD_TYPE=Release
@@ -122,10 +128,19 @@ CMAKE_ARGS=(
     "-DPICO_PLATFORM=$PICO_PLATFORM"
 )
 [ "$FORCE_BUTTON_WAIT" = 1 ] && CMAKE_ARGS+=(-DFORCE_BUTTON_WAIT=1)
+[ "$ENABLE_EDDSA" = 1 ] && CMAKE_ARGS+=(-DENABLE_EDDSA=1)
 CMAKE_ARGS+=("${CMAKE_SIGN[@]}")
 
 rm -rf "$BUILD_DIR"
 cmake -S "$REPO_DIR" -B "$BUILD_DIR" "${CMAKE_ARGS[@]}"
+
+# Fetched dependencies: pin by commit, record in build-info.txt.
+MBEDTLS_WANT=$MBEDTLS_STD_COMMIT; [ "$ENABLE_EDDSA" = 1 ] && MBEDTLS_WANT=$MBEDTLS_EDDSA_COMMIT
+MBEDTLS_GOT="$(git -C pico-keys-sdk/third-party/mbedtls rev-parse HEAD)"
+if [ "$MBEDTLS_GOT" != "$MBEDTLS_WANT" ] && [ "${ALLOW_DEP_MISMATCH:-0}" != 1 ]; then
+    die "mbedtls is at $MBEDTLS_GOT, expected $MBEDTLS_WANT (ALLOW_DEP_MISMATCH=1 to override)"
+fi
+TINYCBOR_GOT="$(git -C pico-keys-sdk/third-party/tinycbor rev-parse HEAD)"
 cmake --build "$BUILD_DIR"
 
 # ---- collect outputs ------------------------------------------------------
@@ -147,6 +162,9 @@ PICOTOOL="$(find "$PICOTOOL_FETCH_FROM_GIT_PATH" -type f -name picotool -perm -u
     echo "pico-keys-sdk:     $SUB_COMMIT"
     echo "pico-sdk:          $SDK_DESC ($SDK_COMMIT)"
     echo "picotool:          ${PICOTOOL:-unknown} $([ -n "$PICOTOOL" ] && "$PICOTOOL" version 2>&1 | head -1)"
+    echo "mbedtls:           $MBEDTLS_GOT ($([ "$ENABLE_EDDSA" = 1 ] && echo polhenarejos v3.6.7-eddsa || echo Mbed-TLS v3.6.7))"
+    echo "tinycbor:          $TINYCBOR_GOT"
+    echo "EdDSA:             $([ "$ENABLE_EDDSA" = 1 ] && echo enabled || echo disabled)"
     echo "compiler:          $(arm-none-eabi-gcc --version | head -1)"
     echo "cmake:             $(cmake --version | head -1)"
     echo "ninja:             $(ninja --version)"
